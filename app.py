@@ -3,7 +3,8 @@ import uuid
 from langgraph.checkpoint.memory import MemorySaver
 from graph import builder 
 
-st.set_page_config(page_title="AL-IKHTIRA Tutor", page_icon="🏫", layout="wide")
+st.set_page_config(page_title="AL-IKHTIRA Tutor", page_icon="logo.png", layout="wide")
+
 st.title("🏫 AL-IKHTIRA Intelligent Tutoring System")
 st.markdown("##### *NextGen Adaptive Scaffolding for Secondary School Education*")
 st.divider()
@@ -27,15 +28,18 @@ state_values = current_graph_state.values if current_graph_state else {}
 mastery_scores = state_values.get("mastery_scores", {})
 
 with st.sidebar:
+    # UPDATED: Modern Streamlit syntax for stretching the logo
+    st.image("logo.png", width="stretch") 
+    st.divider()
+    
     st.header("📊 Student Diagnostic Model")
     
-    # --- THE BUTTON LOGIC ---
-    if st.button("🔄 Start New Problem", use_container_width=True):
-        st.session_state.thread_id = str(uuid.uuid4()) # Creates a new memory thread
+    # UPDATED: Modern Streamlit syntax for stretching the button
+    if st.button("🔄 Start New Problem", width="stretch"): 
+        st.session_state.thread_id = str(uuid.uuid4())
         st.session_state.messages = [{"role": "assistant", "content": "Memory cleared! Paste a new problem to begin."}]
         st.rerun()
     st.divider()
-    # ------------------------
 
     st.info(state_values.get("phase", "Awaiting Problem"))
     st.markdown("**Concept Mastery Probabilities:**")
@@ -62,6 +66,10 @@ if user_input := st.chat_input("Enter your problem..."):
         else:
             inputs = {"student_response": user_input}
             
+            # Check for bypass valve directly from user input here just in case
+            if any(word in user_input.lower() for word in ["understand", "got it", "yes"]):
+                 st.session_state.messages.append({"role": "assistant", "content": "🌟 **Great! Let's move on.**"})
+
         final_output = ""
         for output in tutor_graph.stream(inputs, config):
             for node_name, node_state in output.items():

@@ -1,11 +1,12 @@
 import os
+import streamlit as st
 from typing import TypedDict, List, Dict, Optional
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
 from langchain_google_genai import ChatGoogleGenerativeAI
 
-# --- 1. SET YOUR API KEY ---
-os.environ["GOOGLE_API_KEY"] = "PASTE_YOUR_API_KEY_HERE"
+# Securely pull the API key for Cloud Deployment
+os.environ["GOOGLE_API_KEY"] = st.secrets["GOOGLE_API_KEY"]
 
 llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview", temperature=0.1)
 
@@ -19,9 +20,8 @@ class TutoringState(TypedDict):
     feedback: str
     phase: str
 
-# --- THE FIX: Universal Text Cleaner ---
 def get_clean_text(ai_content) -> str:
-    """Forces LangChain's weird dictionary outputs into plain, readable text."""
+    """Forces LangChain's dictionary outputs into plain, readable text."""
     if isinstance(ai_content, str):
         return ai_content
     elif isinstance(ai_content, list):
@@ -30,13 +30,12 @@ def get_clean_text(ai_content) -> str:
         return "".join(str(x) for x in ai_content)
     return str(ai_content)
 
-# --- 3. AI Agent: Concept Extractor ---
 def concept_extractor_agent(state: TutoringState) -> Dict:
     problem = state["problem_statement"]
     prompt = f"Analyze this problem: '{problem}'. Extract the 2 most fundamental concepts needed to solve it. Return ONLY a comma-separated list of the 2 concepts. No other text."
     
     raw_response = llm.invoke(prompt).content
-    clean_text = get_clean_text(raw_response) # Pass through cleaner
+    clean_text = get_clean_text(raw_response) 
     
     concepts = [c.strip() for c in clean_text.split(",") if c.strip()]
     if not concepts: concepts = ["Understanding the Question", "Solving the Equation"]
@@ -48,7 +47,6 @@ def concept_extractor_agent(state: TutoringState) -> Dict:
         "phase": "Extraction Complete"
     }
 
-# --- 4. AI Agent: The Teacher ---
 def teaching_agent(state: TutoringState) -> Dict:
     current_idx = state.get("current_concept_index", 0)
     concepts = state.get("extracted_concepts", [])
@@ -69,18 +67,17 @@ def teaching_agent(state: TutoringState) -> Dict:
     """
     
     raw_response = llm.invoke(prompt).content
-    clean_text = get_clean_text(raw_response) # Pass through cleaner
+    clean_text = get_clean_text(raw_response) 
     
     return {"current_exercise": clean_text, "phase": f"Teaching: {concept}"}
 
-# --- 5. AI Agent: The Evaluator ---
 def evaluation_agent(state: TutoringState) -> Dict:
     current_idx = state.get("current_concept_index", 0)
     concepts = state.get("extracted_concepts", [])
     
     if current_idx >= len(concepts):
         return {
-            "feedback": "🎉 **Problem Complete!** You have mastered all concepts. Please click 'Start New Problem' in the sidebar.",
+            "feedback": "You've finished this session! Click '🔄 Start New Problem' in the sidebar to tackle a new challenge.",
             "phase": "Session Complete",
             "student_response": None
         }
@@ -91,16 +88,28 @@ def evaluation_agent(state: TutoringState) -> Dict:
     exercise_asked = state.get("current_exercise", "")
     scores = state.get("mastery_scores", {}).copy()
     
+    # --- 1. The Bypass Valve Logic ---
     if "understand" in student_answer or "yes" in student_answer or "got it" in student_answer:
         scores[concept] = 1.0
+        new_index = current_idx + 1
+        
+        # FEATURE ADDITION: Generate Practice problems if they finish the final concept
+        if new_index >= len(concepts):
+            practice_prompt = f"The student just mastered the concepts to solve this problem: '{problem}'. Generate 3 similar practice problems with different numbers. Format nicely with bullet points. Start your response with '🎉 **Problem Complete!** To solidify your knowledge, try these 3 practice exercises on your own:'"
+            practice_text = get_clean_text(llm.invoke(practice_prompt).content)
+            feedback = f"🌟 **Great work!**\n\n---\n\n{practice_text}"
+        else:
+            feedback = "🌟 **Great! Let's move on to the next step.**"
+            
         return {
-            "feedback": "🌟 **Great! Let's move on to the next step.**",
-            "current_concept_index": current_idx + 1,
+            "feedback": feedback,
+            "current_concept_index": new_index,
             "mastery_scores": scores,
             "student_response": None,
             "phase": "Evaluation Complete"
         }
         
+    # --- 2. The Grading Logic ---
     prompt = f"""
     You are evaluating a student. Original problem: '{problem}'. Concept: '{concept}'. Question asked: '{exercise_asked}'. Student's Answer: '{student_answer}'.
     Is the student's answer mathematically correct? 
@@ -109,16 +118,21 @@ def evaluation_agent(state: TutoringState) -> Dict:
     """
     
     raw_response = llm.invoke(prompt).content
-    clean_text = get_clean_text(raw_response) # Pass through cleaner
-    upper_text = clean_text.upper() # Use this just to check logic
+    clean_text = get_clean_text(raw_response) 
+    upper_text = clean_text.upper() 
     
     if "CORRECT" in upper_text and "INCORRECT" not in upper_text:
-        # We strip out the word "CORRECT" but keep the nice formatting for the rest of the text
         feedback = clean_text[upper_text.find("CORRECT")+7:].replace(":**", "").replace(":", "").strip()
         scores[concept] = 1.0
         new_index = current_idx + 1
+        
+        # FEATURE ADDITION: Generate Practice problems if they answer the final concept correctly
+        if new_index >= len(concepts):
+            practice_prompt = f"The student just mastered the concepts to solve this problem: '{problem}'. Generate 3 similar practice problems with different numbers. Format nicely with bullet points. Start your response with '🎉 **Problem Complete!** To solidify your knowledge, try these 3 practice exercises on your own:'"
+            practice_text = get_clean_text(llm.invoke(practice_prompt).content)
+            feedback = f"{feedback}\n\n---\n\n{practice_text}"
+            
     else:
-        # Strip out the word "INCORRECT"
         feedback = clean_text[upper_text.find("INCORRECT")+9:].replace(":**", "").replace(":", "").strip()
         scores[concept] = 0.5
         new_index = current_idx
@@ -131,7 +145,6 @@ def evaluation_agent(state: TutoringState) -> Dict:
         "phase": "Evaluation Complete"
     }
 
-# --- 6. Traffic Cop Routers ---
 def entry_router(state: TutoringState) -> str:
     if not state.get("extracted_concepts"): return "extract"
     return "evaluate"
